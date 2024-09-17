@@ -127,7 +127,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         is provided or when loading video frames from mp4 files.
         """
         # 1e-4 to account for possible numerical error
-        return 1 / self.fps - 1e-4
+        return 1 / self.fps + 1e-4
 
     def __len__(self):
         return self.num_samples
@@ -358,7 +358,7 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
         is provided or when loading video frames from mp4 files.
         """
         # 1e-4 to account for possible numerical error
-        return 1 / self.fps - 1e-4
+        return 1 / self.fps + 1e-4
 
     def __len__(self):
         return self.num_samples
