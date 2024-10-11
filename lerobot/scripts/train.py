@@ -98,10 +98,62 @@ def make_optimizer_and_scheduler(cfg, policy):
 
         optimizer = VQBeTOptimizer(policy, cfg)
         lr_scheduler = VQBeTScheduler(optimizer, cfg)
+    elif cfg.policy.name == "bcrnn":
+        optimizer = torch.optim.Adam(
+            policy.parameters(),
+            lr=cfg.training.lr,
+            weight_decay=cfg.training.weight_decay,
+        )
+
+        lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer,
+            milestones=cfg.training.epoch_schedule,
+            gamma=cfg.training.decay_factor,
+        )
     else:
         raise NotImplementedError()
 
     return optimizer, lr_scheduler
+
+
+def calculate_clipped_grad_percentage(model: nn.Module, max_norm: float) -> float:
+    """
+    Calculate the percentage of gradient values affected by clip_grad_norm_.
+    
+    Args:
+        model (nn.Module): The PyTorch model.
+        max_norm (float): The maximum norm used in clip_grad_norm_.
+    
+    Returns:
+        float: The percentage of gradient values affected by clipping.
+    """
+    # Calculate the total norm of all gradients
+    total_norm = 0.0
+    parameters = [p for p in model.parameters() if p.grad is not None]
+    for p in parameters:
+        param_norm = p.grad.data.norm(2)
+        total_norm += param_norm.item() ** 2
+    total_norm = total_norm ** 0.5
+
+    # If total norm is already below max_norm, no clipping occurs
+    if total_norm <= max_norm:
+        return 0.0
+
+    # Calculate the scaling factor
+    clip_coef = max_norm / (total_norm + 1e-6)
+
+    # Count how many gradient values would be affected
+    total_grad_values = 0
+    clipped_grad_values = 0
+    
+    for p in parameters:
+        grad_tensor = p.grad.data
+        total_grad_values += grad_tensor.numel()
+        clipped_grad_values += torch.sum(grad_tensor.abs() * clip_coef < grad_tensor.abs()).item()
+
+    percentage_clipped = (clipped_grad_values / total_grad_values) * 100
+
+    return percentage_clipped
 
 
 def update_policy(
@@ -127,11 +179,21 @@ def update_policy(
     # Unscale the graident of the optimzer's assigned params in-place **prior to gradient clipping**.
     grad_scaler.unscale_(optimizer)
 
+    # percentage_affected = calculate_clipped_grad_percentage(policy, grad_clip_norm)
+    # print(f"Percentage of gradients affected by clipping: {percentage_affected:.2f}%")
+
     grad_norm = torch.nn.utils.clip_grad_norm_(
         policy.parameters(),
         grad_clip_norm,
         error_if_nonfinite=False,
     )
+
+    # # match robomimic's grad norm calculation
+    # robomimic_grad_norms = 0.
+    # for p in policy.parameters():
+    #     # only clip gradients for parameters for which requires_grad is True
+    #     if p.grad is not None:
+    #         robomimic_grad_norms += p.grad.data.norm(2).pow(2).item()
 
     # Optimizer's gradients are already unscaled, so scaler.step does not unscale them,
     # although it still skips optimizer.step() if the gradients contain infs or NaNs.
@@ -152,6 +214,7 @@ def update_policy(
     info = {
         "loss": loss.item(),
         "grad_norm": float(grad_norm),
+        # "grad_norm": robomimic_grad_norms,
         "lr": optimizer.param_groups[0]["lr"],
         "update_s": time.perf_counter() - start_time,
         **{k: v for k, v in output_dict.items() if k != "loss"},
